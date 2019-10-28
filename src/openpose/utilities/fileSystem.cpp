@@ -355,9 +355,11 @@ namespace op
                 std::swap(filePaths, specificExtensionPaths);
             }
             // // Sort alphabetically
-            // std::sort(filePaths.begin(), filePaths.end());
+            std::sort(filePaths.begin(), filePaths.end());
             // Natural sort
-            std::sort(filePaths.begin(), filePaths.end(), compareNat);
+            // RUIC: This triggers error "error reading variable"
+            //!       use alphabetical sort (above) instead
+            // std::sort(filePaths.begin(), filePaths.end(), compareNat);
             // Return result
             return filePaths;
         }

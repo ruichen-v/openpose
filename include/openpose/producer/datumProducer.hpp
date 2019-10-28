@@ -112,6 +112,7 @@ namespace op
             // If producer released -> it sends an empty cv::Mat + a datumProducerRunning signal
             const bool datumProducerRunning = spProducer->isOpened();
             // If device is open
+            
             if (datumProducerRunning)
             {
                 // Fast forward/backward - Seek to specific frame index desired

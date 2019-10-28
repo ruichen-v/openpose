@@ -98,6 +98,7 @@ namespace op
             log("", Priority::Low, __LINE__, __FUNCTION__, __FILE__);
 
             // Create producer
+            // RUIC: return nullptr if producerType is None (default value)
             auto producerSharedPtr = createProducer(
                 wrapperStructInput.producerType, wrapperStructInput.producerString,
                 wrapperStructInput.cameraResolution, wrapperStructInput.cameraParameterPath,
@@ -938,6 +939,8 @@ namespace op
             // The less number of queues -> the less threads opened, and potentially the less lag
 
             // Sanity checks
+            // RUIC: exactly one of datumProducerW (op default producer)
+            //!                   or userInputWs (custom producer) should exist
             if ((datumProducerW == nullptr) == (userInputWs.empty())
                 && threadManagerMode != ThreadManagerMode::Asynchronous
                 && threadManagerMode != ThreadManagerMode::AsynchronousIn)
@@ -964,6 +967,8 @@ namespace op
             // After producer
             // ID generator (before any multi-threading or any function that requires the ID)
             const auto wIdGenerator = std::make_shared<WIdGenerator<TDatumsSP>>();
+
+            // RUIC: List of all workers
             // If custom user Worker and uses its own thread
             std::vector<TWorker> workersAux;
             if (!userPreProcessingWs.empty())
@@ -986,7 +991,9 @@ namespace op
                 workersAux = mergeVectors(workersAux, {cvMatToOpOutputW});
 
             // Producer
+            // RUIC: only one mode is selected for input
             // If custom user Worker and uses its own thread
+            // RUIC: userInputWs is a vector itself
             if (!userInputWs.empty() && userInputWsOnNewThread)
             {
                 // Thread 0, queues 0 -> 1

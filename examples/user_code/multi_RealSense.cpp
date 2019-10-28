@@ -3,6 +3,10 @@
 // performance.
 // In this function, the user can implement its own way to create frames (e.g., reading his own folder of images).
 
+// RealSense OpenCV
+#include <librealsense2/rs.hpp> // Include RealSense Cross Platform API
+#include <opencv2/opencv.hpp>   // Include OpenCV API
+
 // Command-line user intraface
 #define OPENPOSE_FLAGS_DISABLE_PRODUCER
 #include <openpose/flags.hpp>
@@ -11,41 +15,50 @@
 
 // Custom OpenPose flags
 // Producer
-DEFINE_string(image_dir,                "examples/media/",
-    "Process a directory of images. Read all standard formats (jpg, png, bmp, etc.).");
+DEFINE_int32(color_width, 1280, "Width of color frame.");
+DEFINE_int32(color_height, 720, "Height of color frame.");
+
+// RUIC: img saving and 3d pose extration fully moved to ros side.
 
 // This worker will just read and return all the basic image file formats in a directory
-class WUserInput : public op::WorkerProducer<std::shared_ptr<std::vector<std::shared_ptr<op::Datum>>>>
+class WRealSenseProducer : public op::WorkerProducer<std::shared_ptr<std::vector<std::shared_ptr<op::Datum>>>>
 {
 public:
-    WUserInput(const std::string& directoryPath) :
-        mImageFiles{op::getFilesOnDirectory(directoryPath, op::Extensions::Images)}, // For all basic image formats
+    WRealSenseProducer() :
         // If we want only e.g., "jpg" + "png" images
         // mImageFiles{op::getFilesOnDirectory(directoryPath, std::vector<std::string>{"jpg", "png"})},
-        mCounter{0}
+        last_frame_number{0}
     {
-        if (mImageFiles.empty())
-            op::error("No images found on: " + directoryPath, __LINE__, __FUNCTION__, __FILE__);
+        rs2::config cfg;
+        cfg.enable_stream(RS2_STREAM_COLOR, FLAGS_color_width, FLAGS_color_height, RS2_FORMAT_BGR8, 30);
+        pipe.start(cfg);
     }
 
     void initializationOnThread() {}
 
+    // RUIC: call RealSense OpeCV wrapper, 
     std::shared_ptr<std::vector<std::shared_ptr<op::Datum>>> workProducer()
     {
         try
         {
-            // Close program when empty frame
-            if (mImageFiles.size() <= mCounter)
+            rs2::frameset data = pipe.wait_for_frames();
+            rs2::frame color_frame = data.get_color_frame();
+            if (color_frame.get_frame_number() == last_frame_number)
             {
-                op::log("Last frame read and added to queue. Closing program after it is processed.",
-                        op::Priority::High);
+                // op::log("Last frame read and added to queue. Closing program after it is processed.",
+                //         op::Priority::High);
                 // This funtion stops this worker, which will eventually stop the whole thread system once all the
                 // frames have been processed
-                this->stop();
+                // this->stop();
                 return nullptr;
             }
             else
             {
+                last_frame_number = color_frame.get_frame_number();
+                cv::Mat color_mat = cv::Mat(
+                    cv::Size(FLAGS_color_width, FLAGS_color_height),
+                    CV_8UC3, (void*)color_frame.get_data(), cv::Mat::AUTO_STEP);
+
                 // Create new datum
                 auto datumsPtr = std::make_shared<std::vector<std::shared_ptr<op::Datum>>>();
                 datumsPtr->emplace_back();
@@ -53,16 +66,18 @@ public:
                 datumPtr = std::make_shared<op::Datum>();
 
                 // Fill datum
-                datumPtr->cvInputData = cv::imread(mImageFiles.at(mCounter++));
+                datumPtr->cvInputData = color_mat;
 
                 // If empty frame -> return nullptr
                 if (datumPtr->cvInputData.empty())
                 {
-                    op::log("Empty frame detected on path: " + mImageFiles.at(mCounter-1) + ". Closing program.",
-                        op::Priority::High);
+                    op::log("Color frame is empty.", op::Priority::High);
                     this->stop();
                     datumsPtr = nullptr;
                 }
+
+                datumPtr->cvOutputData = datumPtr->cvInputData;
+                datumPtr->frameNumber = last_frame_number;
 
                 return datumsPtr;
             }
@@ -76,8 +91,8 @@ public:
     }
 
 private:
-    const std::vector<std::string> mImageFiles;
-    unsigned long long mCounter;
+    unsigned long long last_frame_number;
+    rs2::pipeline pipe;
 };
 
 void configureWrapper(op::Wrapper& opWrapper)
@@ -126,50 +141,114 @@ void configureWrapper(op::Wrapper& opWrapper)
 
         // Initializing the user custom classes
         // Frames producer (e.g., video, webcam, ...)
-        auto wUserInput = std::make_shared<WUserInput>(FLAGS_image_dir);
+        auto wRealSenseProducer = std::make_shared<WRealSenseProducer>();
         // Add custom processing
         const auto workerInputOnNewThread = true;
-        opWrapper.setWorker(op::WorkerType::Input, wUserInput, workerInputOnNewThread);
+        opWrapper.setWorker(op::WorkerType::Input, wRealSenseProducer, workerInputOnNewThread);
 
         // Pose configuration (use WrapperStructPose{} for default and recommended configuration)
         const op::WrapperStructPose wrapperStructPose{
-            poseMode, netInputSize, outputSize, keypointScaleMode, FLAGS_num_gpu, FLAGS_num_gpu_start,
-            FLAGS_scale_number, (float)FLAGS_scale_gap, op::flagsToRenderMode(FLAGS_render_pose, multipleView),
-            poseModel, !FLAGS_disable_blending, (float)FLAGS_alpha_pose, (float)FLAGS_alpha_heatmap,
-            FLAGS_part_to_show, FLAGS_model_folder, heatMapTypes, heatMapScaleMode, FLAGS_part_candidates,
-            (float)FLAGS_render_threshold, FLAGS_number_people_max, FLAGS_maximize_positives, FLAGS_fps_max,
-            FLAGS_prototxt_path, FLAGS_caffemodel_path, (float)FLAGS_upsampling_ratio, enableGoogleLogging};
+            poseMode,
+            netInputSize,
+            outputSize,
+            keypointScaleMode,
+            FLAGS_num_gpu,
+            FLAGS_num_gpu_start,
+            FLAGS_scale_number,
+            (float)FLAGS_scale_gap,
+            op::flagsToRenderMode(FLAGS_render_pose,
+            multipleView),
+            poseModel,
+            !FLAGS_disable_blending,
+            (float)FLAGS_alpha_pose,
+            (float)FLAGS_alpha_heatmap,
+            FLAGS_part_to_show,
+            FLAGS_model_folder,
+            heatMapTypes,
+            heatMapScaleMode,
+            FLAGS_part_candidates,
+            (float)FLAGS_render_threshold,
+            FLAGS_number_people_max,
+            FLAGS_maximize_positives,
+            FLAGS_fps_max,
+            FLAGS_prototxt_path,
+            FLAGS_caffemodel_path,
+            (float)FLAGS_upsampling_ratio,
+            enableGoogleLogging
+        };
         opWrapper.configure(wrapperStructPose);
+        
         // Face configuration (use op::WrapperStructFace{} to disable it)
         const op::WrapperStructFace wrapperStructFace{
-            FLAGS_face, faceDetector, faceNetInputSize,
-            op::flagsToRenderMode(FLAGS_face_render, multipleView, FLAGS_render_pose),
-            (float)FLAGS_face_alpha_pose, (float)FLAGS_face_alpha_heatmap, (float)FLAGS_face_render_threshold};
+            FLAGS_face,
+            faceDetector,
+            faceNetInputSize,
+            op::flagsToRenderMode(FLAGS_face_render,
+            multipleView,
+            FLAGS_render_pose),
+            (float)FLAGS_face_alpha_pose,
+            (float)FLAGS_face_alpha_heatmap,
+            (float)FLAGS_face_render_threshold
+        };
         opWrapper.configure(wrapperStructFace);
         // Hand configuration (use op::WrapperStructHand{} to disable it)
         const op::WrapperStructHand wrapperStructHand{
-            FLAGS_hand, handDetector, handNetInputSize, FLAGS_hand_scale_number, (float)FLAGS_hand_scale_range,
-            op::flagsToRenderMode(FLAGS_hand_render, multipleView, FLAGS_render_pose), (float)FLAGS_hand_alpha_pose,
-            (float)FLAGS_hand_alpha_heatmap, (float)FLAGS_hand_render_threshold};
+            FLAGS_hand,
+            handDetector,
+            handNetInputSize,
+            FLAGS_hand_scale_number,
+            (float)FLAGS_hand_scale_range,
+            op::flagsToRenderMode(FLAGS_hand_render,
+            multipleView,
+            FLAGS_render_pose),
+            (float)FLAGS_hand_alpha_pose,
+            (float)FLAGS_hand_alpha_heatmap,
+            (float)FLAGS_hand_render_threshold
+        };
         opWrapper.configure(wrapperStructHand);
+
         // Extra functionality configuration (use op::WrapperStructExtra{} to disable it)
         const op::WrapperStructExtra wrapperStructExtra{
-            FLAGS_3d, FLAGS_3d_min_views, FLAGS_identification, FLAGS_tracking, FLAGS_ik_threads};
+            FLAGS_3d,
+            FLAGS_3d_min_views,
+            FLAGS_identification,
+            FLAGS_tracking,
+            FLAGS_ik_threads
+        };
         opWrapper.configure(wrapperStructExtra);
 
         // RUIC: Producer config is omitted since setWorker() is used.
 
         // Output (comment or use default argument to disable any output)
         const op::WrapperStructOutput wrapperStructOutput{
-            FLAGS_cli_verbose, FLAGS_write_keypoint, op::stringToDataFormat(FLAGS_write_keypoint_format),
-            FLAGS_write_json, FLAGS_write_coco_json, FLAGS_write_coco_json_variants, FLAGS_write_coco_json_variant,
-            FLAGS_write_images, FLAGS_write_images_format, FLAGS_write_video, FLAGS_write_video_fps,
-            FLAGS_write_video_with_audio, FLAGS_write_heatmaps, FLAGS_write_heatmaps_format, FLAGS_write_video_3d,
-            FLAGS_write_video_adam, FLAGS_write_bvh, FLAGS_udp_host, FLAGS_udp_port};
+            FLAGS_cli_verbose,
+            FLAGS_write_keypoint,
+            op::stringToDataFormat(FLAGS_write_keypoint_format),
+            FLAGS_write_json,
+            FLAGS_write_coco_json,
+            FLAGS_write_coco_json_variants,
+            FLAGS_write_coco_json_variant,
+            FLAGS_write_images,
+            FLAGS_write_images_format,
+            FLAGS_write_video,
+            FLAGS_write_video_fps,
+            FLAGS_write_video_with_audio,
+            FLAGS_write_heatmaps,
+            FLAGS_write_heatmaps_format,
+            FLAGS_write_video_3d,
+            FLAGS_write_video_adam,
+            FLAGS_write_bvh,
+            FLAGS_udp_host,
+            FLAGS_udp_port
+        };
         opWrapper.configure(wrapperStructOutput);
+
         // GUI (comment or use default argument to disable any visual output)
         const op::WrapperStructGui wrapperStructGui{
-            op::flagsToDisplayMode(FLAGS_display, FLAGS_3d), !FLAGS_no_gui_verbose, FLAGS_fullscreen};
+            op::flagsToDisplayMode(FLAGS_display, FLAGS_3d),
+            !FLAGS_no_gui_verbose,
+            FLAGS_fullscreen
+        };
         opWrapper.configure(wrapperStructGui);
         // Set to single-thread (for sequential processing and/or debugging and/or reducing latency)
         if (FLAGS_disable_multi_thread)
@@ -181,7 +260,7 @@ void configureWrapper(op::Wrapper& opWrapper)
     }
 }
 
-int tutorialApiCpp()
+int run()
 {
     try
     {
@@ -215,5 +294,5 @@ int main(int argc, char *argv[])
     gflags::ParseCommandLineFlags(&argc, &argv, true);
 
     // Running tutorialApiCpp
-    return tutorialApiCpp();
+    return run();
 }

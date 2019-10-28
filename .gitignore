@@ -1,3 +1,6 @@
+calib_img/
+.vscode
+
 ######################### Binary Files #########################
 # Compiled Object files
 *.slo
